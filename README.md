@@ -1,19 +1,32 @@
 # OpenClaw Assistant
 
-OpenClaw専用のAndroid音声アシスタントアプリ。
+<p align="center">
+  <img src="docs/screenshot.png" width="300" alt="OpenClaw Assistant Screenshot">
+</p>
 
-## 機能
+**OpenClaw専用のAndroid音声アシスタントアプリ** - あなたのAIアシスタントをポケットに。
 
-- 🎤 **ウェイクワード「OpenClaw」** - 音声だけで起動
+## ✨ 機能
+
+- 🎤 **ウェイクワード「OpenClaw」** - 音声だけでハンズフリー起動
 - 🏠 **ホームボタン長押し** - システムアシスタントとして動作
-- 🔄 **連続会話** - セッションを維持して自然な対話
+- 🔄 **連続会話モード** - セッションを維持して自然な対話
+- 🔊 **音声読み上げ** - AIの応答を自動で読み上げ
+- 💬 **In-App Chat** - テキスト＆音声のハイブリッド入力
 - 🔒 **プライバシー重視** - 設定は暗号化保存
 
-## セットアップ
+## 📱 使い方
+
+1. **ホームボタン長押し** または **「OpenClaw」** と話しかける
+2. 質問やリクエストを話す
+3. OpenClawが音声で応答
+4. 会話を続ける（セッション維持）
+
+## 🚀 セットアップ
 
 ### 1. アプリのインストール
 
-Android Studioでビルドするか、Releasesからapkをダウンロード。
+[Releases](https://github.com/yuga-hashimoto/OpenClawAssistant/releases) からAPKをダウンロード、またはソースからビルド。
 
 ### 2. 設定
 
@@ -21,43 +34,49 @@ Android Studioでビルドするか、Releasesからapkをダウンロード。
 2. 右上の⚙️から設定画面へ
 3. 以下を入力：
    - **Webhook URL** (必須): OpenClawのエンドポイント
-   - **認証トークン** (任意): Bearer認証用
-   - **Picovoice Access Key**: https://console.picovoice.ai で無料取得
+   - **Auth Token** (任意): Bearer認証用
 
-### 3. ウェイクワード「OpenClaw」の設定
+### 3. ウェイクワードの設定
 
-1. [Picovoice Console](https://console.picovoice.ai) にログイン
-2. **Porcupine** → **Custom Keywords**
-3. 「OpenClaw」と入力してキーワード作成
-4. Android用の `.ppn` ファイルをダウンロード
-5. `app/src/main/assets/openclaw_android.ppn` として配置
-6. アプリを再ビルド
+1. [Picovoice Console](https://console.picovoice.ai) で無料アカウント作成
+2. **Access Key** を取得して設定画面に入力
+3. アプリでWake Wordトグルをオンに
 
-### 4. システムアシスタントとして設定（任意）
+### 4. システムアシスタントとして設定
 
-1. 端末の設定 → アプリ → デフォルトアプリ → アシスタントアプリ
-2. 「OpenClaw Assistant」を選択
-3. ホームボタン長押しで起動可能に
+1. アプリの「Open Settings」をタップ
+2. または: 端末の設定 → アプリ → デフォルトアプリ → デジタルアシスタント
+3. 「OpenClaw Assistant」を選択
+4. ホームボタン長押しで起動可能に
 
-## OpenClaw側の設定
+## 🔧 OpenClaw側の設定
+
+### Webhook設定例 (config.yaml)
+
+```yaml
+hooks:
+  voice:
+    path: /hooks/voice
+    auth:
+      bearer: "your-secret-token"
+```
 
 ### リクエスト形式
 
 ```json
-POST /your-webhook-endpoint
+POST /hooks/voice
 Content-Type: application/json
 Authorization: Bearer <token>
 
 {
   "message": "ユーザーの発話テキスト",
-  "session_id": "uuid-xxx-xxx",
-  "user_id": "optional"
+  "session_id": "uuid-xxx-xxx"
 }
 ```
 
 ### レスポンス形式
 
-以下のいずれかの形式でOK：
+以下のいずれかの形式をサポート：
 
 ```json
 {"response": "応答テキスト"}
@@ -65,23 +84,33 @@ Authorization: Bearer <token>
 {"message": "応答テキスト"}
 ```
 
-## 技術スタック
+## 🛠 技術スタック
 
-- Kotlin + Jetpack Compose
-- VoiceInteractionService
-- Picovoice Porcupine (ホットワード検知)
-- Android SpeechRecognizer
-- TextToSpeech
-- OkHttp + Gson
-- EncryptedSharedPreferences
+- **UI**: Kotlin + Jetpack Compose + Material 3
+- **音声認識**: Android SpeechRecognizer
+- **音声合成**: Android TextToSpeech
+- **ホットワード**: Picovoice Porcupine
+- **システム連携**: VoiceInteractionService
+- **通信**: OkHttp + Gson
+- **セキュリティ**: EncryptedSharedPreferences
 
-## 必要な権限
+## 📋 必要な権限
 
-- `RECORD_AUDIO` - 音声認識
-- `INTERNET` - API通信
-- `FOREGROUND_SERVICE` - 常時聴取
-- `POST_NOTIFICATIONS` - 通知表示
+| 権限 | 用途 |
+|------|------|
+| `RECORD_AUDIO` | 音声認識 |
+| `INTERNET` | API通信 |
+| `FOREGROUND_SERVICE` | Wake Word常時検知 |
+| `POST_NOTIFICATIONS` | ステータス通知 |
 
-## ライセンス
+## 🤝 Contributing
 
-MIT License
+Pull Requests歓迎！Issues報告もお気軽に。
+
+## 📄 ライセンス
+
+MIT License - 詳細は [LICENSE](LICENSE) を参照。
+
+---
+
+Made with ❤️ for [OpenClaw](https://github.com/openclaw/openclaw)
