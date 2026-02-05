@@ -1,14 +1,10 @@
 package com.openclaw.assistant.speech.diagnostics
 
-import android.Manifest
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
-import android.net.Uri
-import android.provider.Settings
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
-import androidx.core.content.ContextCompat
+import android.util.Log
 import java.util.Locale
 
 /**
@@ -17,8 +13,6 @@ import java.util.Locale
 data class VoiceDiagnostic(
     val sttStatus: DiagnosticStatus,
     val ttsStatus: DiagnosticStatus,
-    val sttReason: String? = null,
-    val ttsReason: String? = null,
     val sttEngine: String? = null,
     val ttsEngine: String? = null,
     val missingLanguages: List<String> = emptyList(),
@@ -34,8 +28,7 @@ enum class DiagnosticStatus {
 data class DiagnosticSuggestion(
     val message: String,
     val actionLabel: String? = null,
-    val intent: Intent? = null,
-    val isPermissionRequest: Boolean = false
+    val intent: Intent? = null
 )
 
 /**
@@ -54,8 +47,6 @@ class VoiceDiagnostics(private val context: Context) {
         return VoiceDiagnostic(
             sttStatus = sttResult.status,
             ttsStatus = ttsResult.status,
-            sttReason = sttResult.reason,
-            ttsReason = ttsResult.reason,
             sttEngine = sttResult.engine,
             ttsEngine = ttsResult.engine,
             missingLanguages = ttsResult.missingLangs,
@@ -65,131 +56,77 @@ class VoiceDiagnostics(private val context: Context) {
 
     private data class ComponentCheckResult(
         val status: DiagnosticStatus,
-        val reason: String? = null,
         val engine: String? = null,
         val suggestions: List<DiagnosticSuggestion> = emptyList(),
         val missingLangs: List<String> = emptyList()
     )
 
     private fun checkSTT(): ComponentCheckResult {
-        // 1. マイク権限チェック
-        val hasPermission = ContextCompat.checkSelfPermission(
-            context, Manifest.permission.RECORD_AUDIO
-        ) == PackageManager.PERMISSION_GRANTED
-
-        if (!hasPermission) {
-            return ComponentCheckResult(
-                status = DiagnosticStatus.ERROR,
-                reason = "Microphone permission denied",
-                suggestions = listOf(
-                    DiagnosticSuggestion(
-                        message = "Microphone permission is required for voice input. Please grant permission in app settings.",
-                        actionLabel = "Open Settings",
-                        intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                            data = Uri.fromParts("package", context.packageName, null)
-                        }
-                    )
-                )
-            )
-        }
-
-        // 2. 音声認識サービスチェック
         val isAvailable = SpeechRecognizer.isRecognitionAvailable(context)
         if (!isAvailable) {
             return ComponentCheckResult(
                 status = DiagnosticStatus.ERROR,
-                reason = "No speech recognition service",
                 suggestions = listOf(
                     DiagnosticSuggestion(
-                        message = "Speech recognition service not found. Please install Google app or enable Google voice services.",
-                        actionLabel = "Open Play Store",
-                        intent = Intent(Intent.ACTION_VIEW).apply {
-                            data = Uri.parse("market://details?id=com.google.android.googlequicksearchbox")
-                            setPackage("com.android.vending")
-                        }
+                        "音声認識サービスが見つかりません。Googleアプリがインストールされているか確認してください。",
+                        "Playストアを開く",
+                        null
                     )
                 )
             )
         }
-
-        return ComponentCheckResult(
-            status = DiagnosticStatus.READY,
-            reason = null,
-            engine = "System Default"
-        )
+        return ComponentCheckResult(status = DiagnosticStatus.READY, engine = "System Default")
     }
 
     private fun checkTTS(tts: TextToSpeech?): ComponentCheckResult {
         if (tts == null) {
             return ComponentCheckResult(
                 status = DiagnosticStatus.ERROR,
-                reason = "TTS engine not initialized",
-                suggestions = listOf(
-                    DiagnosticSuggestion(
-                        message = "Text-to-speech engine failed to initialize. Please check TTS settings.",
-                        actionLabel = "Open TTS Settings",
-                        intent = Intent("com.android.settings.TTS_SETTINGS")
-                    )
-                )
+                suggestions = listOf(DiagnosticSuggestion("TTSエンジンの初期化に失敗しました。"))
             )
         }
 
-        val engine = tts.defaultEngine ?: "Unknown"
+        val engine = tts.defaultEngine
         val currentLocale = Locale.getDefault()
+        
+        // 言語サポートの詳細チェック
         val langResult = tts.isLanguageAvailable(currentLocale)
+        val jaResult = tts.isLanguageAvailable(Locale.JAPANESE)
         
         val suggestions = mutableListOf<DiagnosticSuggestion>()
         val missingLangs = mutableListOf<String>()
 
-        // 言語サポートチェック
-        if (langResult < TextToSpeech.LANG_AVAILABLE) {
-            missingLangs.add(currentLocale.displayName)
-            
-            val reason = "Voice data for ${currentLocale.displayName} not installed"
-            
+        var status = DiagnosticStatus.READY
+
+        // 現在のロケールがサポートされているか
+        if (langResult < TextToSpeech.LANG_AVAILABLE && jaResult < TextToSpeech.LANG_AVAILABLE) {
+            status = DiagnosticStatus.WARNING
+            val langName = currentLocale.displayName
             suggestions.add(
                 DiagnosticSuggestion(
-                    message = "Voice data for ${currentLocale.displayName} is not available. Download it in TTS settings.",
-                    actionLabel = "Download Voice",
-                    intent = Intent("com.android.settings.TTS_SETTINGS")
+                    "音声データ ($langName) がこのエンジン ($engine) で見つかりません。",
+                    "データの管理",
+                    Intent("com.android.settings.TTS_SETTINGS")
                 )
             )
+        }
 
-            // Google TTS以外を使っている場合の追加提案
-            if (engine != "com.google.android.tts") {
-                suggestions.add(
-                    DiagnosticSuggestion(
-                        message = "Consider using Google Text-to-Speech for better language support.",
-                        actionLabel = "Get Google TTS",
-                        intent = Intent(Intent.ACTION_VIEW).apply {
-                            data = Uri.parse("market://details?id=com.google.android.tts")
-                            setPackage("com.android.vending")
-                        }
-                    )
+        // エンジンがGoogleでない場合の推奨
+        if (engine != "com.google.android.tts") {
+            suggestions.add(
+                DiagnosticSuggestion(
+                    "現在は $engine が使用されています。Google音声サービスへの切り替えを推奨します。",
+                    "エンジン設定",
+                    Intent("com.android.settings.TTS_SETTINGS")
                 )
-            }
-
-            return ComponentCheckResult(
-                status = DiagnosticStatus.WARNING,
-                reason = reason,
-                engine = engine,
-                suggestions = suggestions,
-                missingLangs = missingLangs
             )
         }
 
         return ComponentCheckResult(
-            status = DiagnosticStatus.READY,
-            reason = null,
-            engine = getEngineDisplayName(engine)
+            status = status,
+            engine = engine,
+            suggestions = suggestions,
+            missingLangs = missingLangs
         )
-    }
-
-    private fun getEngineDisplayName(enginePackage: String): String {
-        return when (enginePackage) {
-            "com.google.android.tts" -> "Google TTS"
-            "com.samsung.SMT" -> "Samsung TTS"
-            else -> enginePackage.substringAfterLast(".")
-        }
     }
 }
