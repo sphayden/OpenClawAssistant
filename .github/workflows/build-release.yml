@@ -52,6 +52,12 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
           echo "short_sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
+      - name: Rename Artifacts
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          mv app/build/outputs/apk/release/app-release.apk app/build/outputs/apk/release/OpenClawAssistant-${{ github.ref_name }}.apk
+          mv app/build/outputs/bundle/release/app-release.aab app/build/outputs/bundle/release/OpenClawAssistant-${{ github.ref_name }}.aab
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
@@ -59,8 +65,8 @@ jobs:
           name: Release ${{ github.ref_name }}
           body: ${{ steps.commit.outputs.message }}
           files: |
-            app/build/outputs/apk/release/app-release.apk
-            app/build/outputs/bundle/release/app-release.aab
+            app/build/outputs/apk/release/OpenClawAssistant-${{ github.ref_name }}.apk
+            app/build/outputs/bundle/release/OpenClawAssistant-${{ github.ref_name }}.aab
           draft: true
           prerelease: false
 
