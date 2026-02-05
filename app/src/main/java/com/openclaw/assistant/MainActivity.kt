@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.speech.tts.TextToSpeech
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -15,9 +16,11 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.automirrored.filled.HelpOutline
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -30,21 +33,27 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.text.font.FontWeight
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
-import androidx.compose.material.icons.automirrored.filled.HelpOutline
 import com.openclaw.assistant.data.SettingsRepository
-import com.openclaw.assistant.service.OpenClawAssistantService
 import com.openclaw.assistant.service.HotwordService
+import com.openclaw.assistant.service.OpenClawAssistantService
+import com.openclaw.assistant.speech.TTSUtils
+import com.openclaw.assistant.speech.diagnostics.DiagnosticStatus
+import com.openclaw.assistant.speech.diagnostics.VoiceDiagnostic
+import com.openclaw.assistant.speech.diagnostics.VoiceDiagnostics
 import com.openclaw.assistant.ui.theme.OpenClawAssistantTheme
 
-class MainActivity : ComponentActivity() {
+class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
     private lateinit var settings: SettingsRepository
+    private var tts: TextToSpeech? = null
+    private var voiceDiagnostic by mutableStateOf<VoiceDiagnostic?>(null)
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -59,18 +68,38 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         settings = SettingsRepository.getInstance(this)
         
+        // 診断用にTTSを初期化
+        tts = TextToSpeech(this, this, TTSUtils.GOOGLE_TTS_PACKAGE)
+        
         checkPermissions()
 
         setContent {
             OpenClawAssistantTheme {
                 MainScreen(
                     settings = settings,
+                    diagnostic = voiceDiagnostic,
                     onOpenSettings = { startActivity(Intent(this, SettingsActivity::class.java)) },
                     onOpenAssistantSettings = { openAssistantSettings() },
-                    onToggleHotword = { enabled -> toggleHotwordService(enabled) }
+                    onToggleHotword = { enabled -> toggleHotwordService(enabled) },
+                    onRefreshDiagnostics = { runDiagnostics() }
                 )
             }
         }
+    }
+
+    override fun onInit(status: Int) {
+        if (status == TextToSpeech.SUCCESS) {
+            runDiagnostics()
+        } else {
+            // Google TTS失敗時はデフォルトでリトライ
+            tts = TextToSpeech(this) { 
+                runDiagnostics()
+            }
+        }
+    }
+
+    private fun runDiagnostics() {
+        voiceDiagnostic = VoiceDiagnostics(this).performFullCheck(tts)
     }
 
     private fun checkPermissions() {
@@ -124,15 +153,22 @@ class MainActivity : ComponentActivity() {
             false
         }
     }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        tts?.shutdown()
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
     settings: SettingsRepository,
+    diagnostic: VoiceDiagnostic?,
     onOpenSettings: () -> Unit,
     onOpenAssistantSettings: () -> Unit,
-    onToggleHotword: (Boolean) -> Unit
+    onToggleHotword: (Boolean) -> Unit,
+    onRefreshDiagnostics: () -> Unit
 ) {
     val context = LocalContext.current
     var isConfigured by remember { mutableStateOf(settings.isConfigured()) }
@@ -149,6 +185,7 @@ fun MainScreen(
                 isConfigured = settings.isConfigured()
                 hotwordEnabled = settings.hotwordEnabled
                 isAssistantSet = (context as? MainActivity)?.isAssistantActive() ?: false
+                onRefreshDiagnostics()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -183,7 +220,13 @@ fun MainScreen(
             // Status card
             StatusCard(isConfigured = isConfigured)
             
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Diagnostic Panel
+            if (diagnostic != null) {
+                DiagnosticPanel(diagnostic)
+                Spacer(modifier = Modifier.height(16.dp))
+            }
 
             // Quick actions - 2 cards side by side
             Text(
@@ -248,7 +291,7 @@ fun MainScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(56.dp),
-                shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp)
+                shape = RoundedCornerShape(16.dp)
             ) {
                 Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null)
                 Spacer(modifier = Modifier.width(12.dp))
@@ -325,150 +368,93 @@ fun StatusCard(isConfigured: Boolean) {
 }
 
 @Composable
-fun ActionCard(
-    icon: ImageVector,
-    title: String,
-    description: String,
-    actionText: String? = null,
-    onClick: (() -> Unit)? = null,
-    showSwitch: Boolean = false,
-    switchValue: Boolean = false,
-    onSwitchChange: ((Boolean) -> Unit)? = null,
-    isHighlight: Boolean = false,
-    showInfo: Boolean = false,
-    onInfoClick: (() -> Unit)? = null
-) {
+fun DiagnosticPanel(diagnostic: VoiceDiagnostic) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        onClick = { onClick?.invoke() },
-        enabled = onClick != null && !showSwitch
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text("Voice System Check", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            Spacer(modifier = Modifier.height(8.dp))
+            
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                DiagnosticItem(
+                    label = "Input (Mic)", 
+                    status = diagnostic.sttStatus, 
+                    modifier = Modifier.weight(1f)
+                )
+                DiagnosticItem(
+                    label = "Output (TTS)", 
+                    status = diagnostic.ttsStatus, 
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            if (diagnostic.suggestions.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(12.dp))
+                diagnostic.suggestions.forEach { suggestion ->
+                    SuggestionItem(suggestion)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun DiagnosticItem(label: String, status: DiagnosticStatus, modifier: Modifier = Modifier) {
+    val color = when (status) {
+        DiagnosticStatus.READY -> Color(0xFF4CAF50)
+        DiagnosticStatus.WARNING -> Color(0xFFFFC107)
+        DiagnosticStatus.ERROR -> Color(0xFFF44336)
+    }
+    val icon = when (status) {
+        DiagnosticStatus.READY -> Icons.Default.Check
+        DiagnosticStatus.WARNING -> Icons.Default.Info
+        DiagnosticStatus.ERROR -> Icons.Default.Error
+    }
+
+    Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
+        Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(16.dp))
+        Spacer(modifier = Modifier.width(4.dp))
+        Text(label, fontSize = 12.sp)
+    }
+}
+
+@Composable
+fun SuggestionItem(suggestion: com.openclaw.assistant.speech.diagnostics.DiagnosticSuggestion) {
+    val context = LocalContext.current
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        color = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(8.dp),
+        tonalElevation = 1.dp
     ) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
+            modifier = Modifier.padding(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(32.dp)
-            )
-            
-            Spacer(modifier = Modifier.width(16.dp))
-            
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = title,
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Medium
-                )
-                Text(
-                    text = description,
-                    fontSize = 13.sp,
-                    color = if (isHighlight && !showSwitch) MaterialTheme.colorScheme.error else Color.Gray
-                )
-            }
-
-            if (showInfo) {
-                IconButton(onClick = onInfoClick ?: {}) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.HelpOutline,
-                        contentDescription = stringResource(R.string.how_to_use),
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                }
-            }
-
-            if (showSwitch) {
-                Switch(
-                    checked = switchValue,
-                    onCheckedChange = onSwitchChange
-                )
-            } else if (actionText != null) {
-                TextButton(onClick = { onClick?.invoke() }) {
-                    Text(actionText)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun UsageCard() {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
-        )
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp)
-        ) {
-            UsageStep(number = "1", text = stringResource(R.string.step_1))
-            UsageStep(number = "2", text = stringResource(R.string.step_2))
-            UsageStep(number = "3", text = stringResource(R.string.step_3))
-            UsageStep(number = "4", text = stringResource(R.string.step_4))
-        }
-    }
-}
-
-@Composable
-fun UsageStep(number: String, text: String) {
-    Row(
-        modifier = Modifier.padding(vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box(
-            modifier = Modifier
-                .size(24.dp)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.primary),
-            contentAlignment = Alignment.Center
-        ) {
             Text(
-                text = number,
-                color = Color.White,
+                text = suggestion.message,
+                modifier = Modifier.weight(1f),
                 fontSize = 12.sp,
-                fontWeight = FontWeight.Bold
+                lineHeight = 16.sp
             )
-        }
-        Spacer(modifier = Modifier.width(12.dp))
-        Text(text = text, fontSize = 14.sp)
-    }
-}
-
-@Composable
-fun WarningCard(message: String, onClick: () -> Unit) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF3E0)),
-        onClick = onClick
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                imageVector = Icons.Default.Warning,
-                contentDescription = null,
-                tint = Color(0xFFFF9800),
-                modifier = Modifier.size(24.dp)
-            )
-            Spacer(modifier = Modifier.width(12.dp))
-            Text(
-                text = message,
-                color = Color(0xFFE65100),
-                modifier = Modifier.weight(1f)
-            )
-            Icon(
-                imageVector = Icons.Default.ChevronRight,
-                contentDescription = null,
-                tint = Color(0xFFFF9800)
-            )
+            if (suggestion.actionLabel != null && suggestion.intent != null) {
+                TextButton(
+                    onClick = { 
+                        try {
+                            context.startActivity(suggestion.intent)
+                        } catch (e: Exception) {
+                            Toast.makeText(context, "Cannot open settings", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    contentPadding = PaddingValues(horizontal = 8.dp)
+                ) {
+                    Text(suggestion.actionLabel, fontSize = 12.sp)
+                }
+            }
         }
     }
 }
@@ -559,6 +545,65 @@ fun CompactActionCard(
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center
             )
         }
+    }
+}
+
+@Composable
+fun WarningCard(message: String, onClick: () -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF3E0)),
+        onClick = onClick
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Default.Warning,
+                contentDescription = null,
+                tint = Color(0xFFFF9800),
+                modifier = Modifier.size(24.dp)
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Text(
+                text = message,
+                color = Color(0xFFE65100),
+                modifier = Modifier.weight(1f)
+            )
+            Icon(
+                imageVector = Icons.Default.ChevronRight,
+                contentDescription = null,
+                tint = Color(0xFFFF9800)
+            )
+        }
+    }
+}
+
+@Composable
+fun UsageStep(number: String, text: String) {
+    Row(
+        modifier = Modifier.padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(24.dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.primary),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = number,
+                color = Color.White,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
+        Spacer(modifier = Modifier.width(12.dp))
+        Text(text = text, fontSize = 14.sp)
     }
 }
 
