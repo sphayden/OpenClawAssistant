@@ -61,14 +61,19 @@ Download APK from [Releases](https://github.com/yuga-hashimoto/OpenClawAssistant
 
 ### 🔧 OpenClaw Configuration
 
-Add a webhook for this app in your OpenClaw config:
+Add a webhook for this app in your `openclaw.json`:
 
-```yaml
-hooks:
-  voice:
-    path: /hooks/voice
-    auth:
-      bearer: "your-secret-token"
+```json
+{
+  "hooks": {
+    "voice": {
+      "path": "/hooks/voice",
+      "auth": {
+        "bearer": "your-secret-token"
+      }
+    }
+  }
+}
 ```
 
 Then expose it externally using ngrok or similar:
@@ -114,13 +119,18 @@ This section is for AI agents (like OpenClaw) that need to set up webhook integr
 
 To configure OpenClaw for this Android app:
 
-1. **Add webhook to config.yaml:**
-```yaml
-hooks:
-  voice:
-    path: /hooks/voice
-    auth:  # optional
-      bearer: "<generate-secure-token>"
+1. **Add webhook to `openclaw.json`:**
+```json
+{
+  "hooks": {
+    "voice": {
+      "path": "/hooks/voice",
+      "auth": {
+        "bearer": "<generate-secure-token>"
+      }
+    }
+  }
+}
 ```
 
 2. **Expose externally with ngrok:**
@@ -210,14 +220,19 @@ Also accepts: `{"text": "..."}` or `{"message": "..."}`
 
 ### 🔧 OpenClaw側の設定
 
-config.yamlにWebhookを追加：
+`openclaw.json` にWebhookを追加：
 
-```yaml
-hooks:
-  voice:
-    path: /hooks/voice
-    auth:
-      bearer: "your-secret-token"
+```json
+{
+  "hooks": {
+    "voice": {
+      "path": "/hooks/voice",
+      "auth": {
+        "bearer": "your-secret-token"
+      }
+    }
+  }
+}
 ```
 
 ngrokなどで外部公開：
@@ -261,13 +276,18 @@ MIT License - 詳細は [LICENSE](LICENSE) を参照。
 
 ### Webhook設定手順
 
-1. **config.yamlにWebhookを追加:**
-```yaml
-hooks:
-  voice:
-    path: /hooks/voice
-    auth:  # 任意
-      bearer: "<安全なトークンを生成>"
+1. **`openclaw.json` にWebhookを追加:**
+```json
+{
+  "hooks": {
+    "voice": {
+      "path": "/hooks/voice",
+      "auth": {
+        "bearer": "<安全なトークンを生成>"
+      }
+    }
+  }
+}
 ```
 
 2. **ngrokで外部公開:**
