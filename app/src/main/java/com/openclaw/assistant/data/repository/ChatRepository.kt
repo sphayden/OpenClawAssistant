@@ -45,12 +45,7 @@ class ChatRepository private constructor(context: Context) {
         return chatDao.getMessagesForSession(sessionId)
     }
 
-    suspend fun addMessage(sessionId: String, text: String, isUser: Boolean) {
-        // Ensure session exists (simple check or upsert could happen here, but we rely on createSession called first usually)
-        // If session doesn't exist, FK constraint fails. 
-        // For robustness, we could check if session exists, if not create it? 
-        // But logic dictates session should be created.
-        // Let's safe-guard: if we try to add to a session that doesn't exist locally, we create it.
+    suspend fun addMessage(sessionId: String, text: String, isUser: Boolean): String {
         val session = chatDao.getSessionById(sessionId)
         if (session == null) {
             chatDao.insertSession(SessionEntity(id = sessionId, title = text.take(20)))
@@ -62,8 +57,10 @@ class ChatRepository private constructor(context: Context) {
             isUser = isUser
         )
         chatDao.insertMessage(message)
-        
-        // Update session title if it's the first message and title is default?
-        // Simplification for now: leave title as is or update logic later.
+        return message.id
+    }
+
+    suspend fun updateMessageContent(messageId: String, content: String) {
+        chatDao.updateContent(messageId, content)
     }
 }

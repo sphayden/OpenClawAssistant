@@ -3,7 +3,6 @@ package com.openclaw.assistant
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
-import android.speech.tts.TextToSpeech
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -42,7 +41,6 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.foundation.text.BasicTextField
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import com.openclaw.assistant.speech.TTSUtils
 import com.openclaw.assistant.ui.chat.ChatMessage
 import com.openclaw.assistant.ui.chat.ChatUiState
 import com.openclaw.assistant.ui.chat.ChatViewModel
@@ -51,31 +49,21 @@ import androidx.compose.material3.TextButton
 import kotlinx.coroutines.launch
 import java.util.Locale
 
-import com.openclaw.assistant.data.SettingsRepository
-
 private const val TAG = "ChatActivity"
 
-class ChatActivity : ComponentActivity(), TextToSpeech.OnInitListener {
+class ChatActivity : ComponentActivity() {
 
     private val viewModel: ChatViewModel by viewModels()
-    private var tts: TextToSpeech? = null
-    private var isRetry = false
-    private lateinit var settings: SettingsRepository
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        settings = SettingsRepository.getInstance(this)
-
-        // Initialize TTS with Activity context (important for MIUI!)
-        // Try Google TTS first for better compatibility on Chinese ROMs
-        initializeTTS()
 
         // Request Microphone permission if not granted
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) 
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
             != PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(
-                this, 
-                arrayOf(Manifest.permission.RECORD_AUDIO), 
+                this,
+                arrayOf(Manifest.permission.RECORD_AUDIO),
                 REQUEST_RECORD_AUDIO
             )
         }
@@ -85,13 +73,13 @@ class ChatActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                 val uiState by viewModel.uiState.collectAsState()
                 val allSessions by viewModel.allSessions.collectAsState()
                 val currentSessionId by viewModel.currentSessionId.collectAsState()
-                
+
                 ChatScreen(
                     uiState = uiState,
                     allSessions = allSessions,
                     currentSessionId = currentSessionId,
                     onSendMessage = { viewModel.sendMessage(it) },
-                    onStartListening = { 
+                    onStartListening = {
                         Log.e(TAG, "onStartListening called, permission=${checkPermission()}")
                         if (checkPermission()) {
                             viewModel.startListening()
@@ -108,47 +96,6 @@ class ChatActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                 )
             }
         }
-    }
-
-    private fun initializeTTS() {
-        Log.e(TAG, "Initializing TTS (isRetry=$isRetry)...")
-        
-        val preferredEngine = settings.ttsEngine
-        
-        if (!isRetry && preferredEngine.isNotEmpty()) {
-             Log.e(TAG, "Trying preferred engine: $preferredEngine")
-             tts = TextToSpeech(this, this, preferredEngine)
-        } else if (!isRetry) {
-             Log.e(TAG, "Trying Google TTS priority")
-            tts = TextToSpeech(this, this, TTSUtils.GOOGLE_TTS_PACKAGE)
-        } else {
-            Log.e(TAG, "Retry/Fallback to default engine")
-            tts = TextToSpeech(this, this)
-        }
-    }
-
-    override fun onInit(status: Int) {
-        Log.e(TAG, "TTS onInit callback, status=$status (SUCCESS=${TextToSpeech.SUCCESS})")
-        if (status == TextToSpeech.SUCCESS) {
-            TTSUtils.setupVoice(tts, settings.ttsSpeed)
-            
-            // Pass TTS to ViewModel
-            tts?.let { viewModel.setTTS(it) }
-            Log.e(TAG, "TTS initialized successfully and passed to ViewModel")
-        } else {
-            Log.e(TAG, "TTS initialization FAILED with status=$status")
-            if (!isRetry) {
-                isRetry = true
-                initializeTTS()
-            }
-        }
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        tts?.stop()
-        tts?.shutdown()
-        tts = null
     }
 
     private fun checkPermission(): Boolean {
@@ -282,11 +229,20 @@ fun ChatScreen(
         Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { 
-                        Text(
-                            stringResource(R.string.app_name), 
-                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold 
-                        ) 
+                    title = {
+                        Column {
+                            Text(
+                                stringResource(R.string.app_name),
+                                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                            )
+                            if (uiState.lastModel != null) {
+                                Text(
+                                    uiState.lastModel,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
                     },
                     navigationIcon = {
                         IconButton(onClick = onBack) {

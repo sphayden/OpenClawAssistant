@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cmd /c \"gradlew.bat assembleDebug\")",
+      "Bash(./gradlew assembleDebug:*)",
+      "WebFetch(domain:docs.fish.audio)",
+      "WebFetch(domain:fish.audio)",
+      "WebSearch"
+    ]
+  }
+}

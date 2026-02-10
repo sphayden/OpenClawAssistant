@@ -38,11 +38,15 @@ import androidx.compose.ui.res.stringResource
 import com.openclaw.assistant.R
 import com.openclaw.assistant.data.SettingsRepository
 import com.openclaw.assistant.api.OpenClawClient
+import com.openclaw.assistant.api.StreamEvent
+import com.openclaw.assistant.speech.AudioPlayer
 import com.openclaw.assistant.speech.SpeechRecognizerManager
-import com.openclaw.assistant.speech.TTSManager
 import com.openclaw.assistant.speech.SpeechResult
+import com.openclaw.assistant.speech.tts.TTSOrchestrator
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.consumeAsFlow
 import androidx.lifecycle.setViewTreeLifecycleOwner
 import androidx.lifecycle.setViewTreeViewModelStoreOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
@@ -66,7 +70,8 @@ class OpenClawSession(context: Context) : VoiceInteractionSession(context),
     private val settings = SettingsRepository.getInstance(context)
     private val apiClient = OpenClawClient()
     private lateinit var speechManager: SpeechRecognizerManager
-    private lateinit var ttsManager: TTSManager
+    private lateinit var ttsOrchestrator: TTSOrchestrator
+    private lateinit var audioPlayer: AudioPlayer
     
     // Repository
     private val chatRepository = com.openclaw.assistant.data.repository.ChatRepository.getInstance(context)
@@ -106,7 +111,8 @@ class OpenClawSession(context: Context) : VoiceInteractionSession(context),
         }
 
         speechManager = SpeechRecognizerManager(context)
-        ttsManager = TTSManager(context)
+        ttsOrchestrator = TTSOrchestrator(context)
+        audioPlayer = AudioPlayer(context)
         Log.e(TAG, "Session onCreate completed")
     }
 
@@ -200,7 +206,8 @@ class OpenClawSession(context: Context) : VoiceInteractionSession(context),
         abandonAudioFocus()
         scope.cancel()
         speechManager.destroy()
-        ttsManager.stop()
+        ttsOrchestrator.stop()
+        audioPlayer.stop()
 
         // Resume Hotword
         sendResumeBroadcast()
@@ -213,7 +220,7 @@ class OpenClawSession(context: Context) : VoiceInteractionSession(context),
         // Resume Hotword (safety)
         sendResumeBroadcast()
         
-        ttsManager.shutdown()
+        ttsOrchestrator.shutdown()
         toneGenerator.release()
     }
 
@@ -328,51 +335,128 @@ class OpenClawSession(context: Context) : VoiceInteractionSession(context),
         displayText.value = ""
 
         scope.launch {
-            // Save User Message
             currentSessionId?.let { sessionId ->
                 chatRepository.addMessage(sessionId, message, isUser = true)
             }
 
-            val result = apiClient.sendMessage(
+            if (settings.streamingEnabled) {
+                sendToOpenClawStreaming(message)
+            } else {
+                sendToOpenClawBlocking(message)
+            }
+        }
+    }
+
+    private suspend fun sendToOpenClawBlocking(message: String) {
+        val result = apiClient.sendMessage(
+            webhookUrl = settings.webhookUrl,
+            message = message,
+            sessionId = settings.sessionId,
+            authToken = settings.authToken.takeIf { it.isNotBlank() }
+        )
+
+        result.fold(
+            onSuccess = { response ->
+                val responseText = response.getResponseText()
+                if (responseText != null) {
+                    displayText.value = responseText
+
+                    currentSessionId?.let { sessionId ->
+                        chatRepository.addMessage(sessionId, responseText, isUser = false)
+                    }
+
+                    if (settings.ttsEnabled) {
+                        if (response.hasServerAudio()) {
+                            playServerAudio(response.audioUrl!!, responseText)
+                        } else {
+                            speakResponse(responseText)
+                        }
+                    } else if (settings.continuousMode) {
+                        scope.launch {
+                            delay(500)
+                            startListening()
+                        }
+                    }
+                } else if (response.error != null) {
+                    currentState.value = AssistantState.ERROR
+                    errorMessage.value = response.error
+                } else {
+                    currentState.value = AssistantState.ERROR
+                    errorMessage.value = context.getString(R.string.error_no_response)
+                }
+            },
+            onFailure = { error ->
+                Log.e(TAG, "API error", error)
+                currentState.value = AssistantState.ERROR
+                errorMessage.value = error.message ?: context.getString(R.string.error_network)
+            }
+        )
+    }
+
+    private suspend fun sendToOpenClawStreaming(message: String) {
+        val fullText = StringBuilder()
+        var hadError = false
+
+        val ttsChannel = Channel<String>(Channel.UNLIMITED)
+        val ttsFlow = ttsChannel.consumeAsFlow()
+
+        val ttsJob = if (settings.ttsEnabled) {
+            scope.launch {
+                currentState.value = AssistantState.SPEAKING
+                ttsOrchestrator.speakStreaming(ttsFlow)
+                abandonAudioFocus()
+            }
+        } else null
+
+        try {
+            apiClient.sendMessageStream(
                 webhookUrl = settings.webhookUrl,
                 message = message,
-                sessionId = settings.sessionId, // This uses the generated ID which we synced
+                sessionId = settings.sessionId,
                 authToken = settings.authToken.takeIf { it.isNotBlank() }
-            )
-
-            result.fold(
-                onSuccess = { response ->
-                    val responseText = response.getResponseText()
-                    if (responseText != null) {
-                        displayText.value = responseText
-                        
-                        // Save AI Message
-                        currentSessionId?.let { sessionId ->
-                            chatRepository.addMessage(sessionId, responseText, isUser = false)
+            ).collect { event ->
+                when (event) {
+                    is StreamEvent.Text -> {
+                        fullText.append(event.chunk)
+                        displayText.value = fullText.toString()
+                        if (currentState.value == AssistantState.THINKING && settings.ttsEnabled) {
+                            currentState.value = AssistantState.SPEAKING
                         }
-                        
-                        if (settings.ttsEnabled) {
-                            speakResponse(responseText)
-                        } else if (settings.continuousMode) {
-                            scope.launch {
-                                delay(500)
-                                startListening()
-                            }
-                        }
-                    } else if (response.error != null) {
-                        currentState.value = AssistantState.ERROR
-                        errorMessage.value = response.error
-                    } else {
-                        currentState.value = AssistantState.ERROR
-                        errorMessage.value = context.getString(R.string.error_no_response)
+                        ttsChannel.trySend(event.chunk)
                     }
-                },
-                onFailure = { error ->
-                    Log.e(TAG, "API error", error)
-                    currentState.value = AssistantState.ERROR
-                    errorMessage.value = error.message ?: context.getString(R.string.error_network)
+                    is StreamEvent.Done -> {
+                        if (fullText.isEmpty() && event.fullText.isNotEmpty()) {
+                            fullText.clear()
+                            fullText.append(event.fullText)
+                            displayText.value = event.fullText
+                        }
+                    }
+                    is StreamEvent.Error -> {
+                        hadError = true
+                        currentState.value = AssistantState.ERROR
+                        errorMessage.value = event.message
+                    }
                 }
-            )
+            }
+        } catch (e: Exception) {
+            hadError = true
+            currentState.value = AssistantState.ERROR
+            errorMessage.value = e.message ?: context.getString(R.string.error_network)
+        } finally {
+            ttsChannel.close()
+        }
+
+        if (!hadError && fullText.isNotEmpty()) {
+            currentSessionId?.let { sessionId ->
+                chatRepository.addMessage(sessionId, fullText.toString(), isUser = false)
+            }
+        }
+
+        ttsJob?.join()
+
+        if (!hadError && settings.continuousMode) {
+            delay(500)
+            startListening()
         }
     }
 
@@ -380,13 +464,12 @@ class OpenClawSession(context: Context) : VoiceInteractionSession(context),
         currentState.value = AssistantState.SPEAKING
 
         scope.launch {
-            val success = ttsManager.speak(text)
+            val success = ttsOrchestrator.speak(text)
 
             // Abandon audio focus after TTS completes
             abandonAudioFocus()
 
             if (success) {
-                // 読み上げ完了後、連続会話モードが有効なら再度リスニング開始
                 if (settings.continuousMode) {
                     delay(500)
                     startListening()
@@ -394,6 +477,36 @@ class OpenClawSession(context: Context) : VoiceInteractionSession(context),
             } else {
                 currentState.value = AssistantState.ERROR
                 errorMessage.value = context.getString(R.string.error_speech_general)
+            }
+        }
+    }
+
+    /**
+     * Play server-generated TTS audio, with fallback to local TTS
+     */
+    private fun playServerAudio(audioUrl: String, fallbackText: String) {
+        currentState.value = AssistantState.SPEAKING
+
+        scope.launch {
+            Log.d(TAG, "Playing server audio: $audioUrl")
+            val success = audioPlayer.playFromUrl(audioUrl)
+
+            // Abandon audio focus after playback
+            abandonAudioFocus()
+
+            if (success) {
+                Log.d(TAG, "Server audio playback completed successfully")
+                currentState.value = AssistantState.IDLE
+
+                // Continue listening if continuous mode enabled
+                if (settings.continuousMode) {
+                    delay(500)
+                    startListening()
+                }
+            } else {
+                // Fallback to local TTS if server audio fails
+                Log.w(TAG, "Server audio failed, falling back to local TTS")
+                speakResponse(fallbackText)
             }
         }
     }

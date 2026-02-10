@@ -3,6 +3,9 @@ package com.openclaw.assistant.api
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -70,13 +73,97 @@ class OpenClawClient {
                     )
                 }
 
-                // Extract response text from JSON
-                val text = extractResponseText(responseBody)
-                Result.success(OpenClawResponse(response = text ?: responseBody))
+                // Parse response JSON (text + optional audio URL)
+                val parsedResponse = parseResponse(responseBody)
+                Result.success(parsedResponse)
             }
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+    /**
+     * POST message to streaming SSE endpoint and return events as a Flow
+     */
+    fun sendMessageStream(
+        webhookUrl: String,
+        message: String,
+        sessionId: String,
+        authToken: String? = null
+    ): Flow<StreamEvent> = callbackFlow {
+        val streamUrl = deriveStreamUrl(webhookUrl)
+
+        val requestBody = JsonObject().apply {
+            addProperty("message", message)
+            addProperty("session_id", sessionId)
+        }
+        val jsonBody = gson.toJson(requestBody)
+            .toRequestBody("application/json; charset=utf-8".toMediaType())
+
+        val requestBuilder = Request.Builder()
+            .url(streamUrl)
+            .post(jsonBody)
+            .addHeader("Content-Type", "application/json")
+            .addHeader("Accept", "text/event-stream")
+
+        if (!authToken.isNullOrBlank()) {
+            requestBuilder.addHeader("Authorization", "Bearer $authToken")
+        }
+
+        val call = client.newCall(requestBuilder.build())
+
+        withContext(Dispatchers.IO) {
+            try {
+                val response = call.execute()
+
+                if (!response.isSuccessful) {
+                    val errorBody = response.body?.string() ?: response.message
+                    trySend(StreamEvent.Error("HTTP ${response.code}: $errorBody"))
+                    response.close()
+                    return@withContext
+                }
+
+                val source = response.body?.source()
+                if (source == null) {
+                    trySend(StreamEvent.Error("Empty response body"))
+                    response.close()
+                    return@withContext
+                }
+
+                var eventType = ""
+                val dataBuffer = StringBuilder()
+
+                while (!source.exhausted()) {
+                    val line = source.readUtf8Line() ?: break
+                    when {
+                        line.startsWith("event:") -> eventType = line.removePrefix("event:").trim()
+                        line.startsWith("data:") -> dataBuffer.append(line.removePrefix("data:").trim())
+                        line.isBlank() -> {
+                            if (eventType.isNotEmpty() && dataBuffer.isNotEmpty()) {
+                                parseSSEEvent(eventType, dataBuffer.toString())?.let { trySend(it) }
+                            }
+                            eventType = ""
+                            dataBuffer.clear()
+                        }
+                        line.startsWith(":") -> { /* SSE comment, ignore */ }
+                    }
+                }
+
+                response.close()
+            } catch (e: Exception) {
+                if (!call.isCanceled()) {
+                    trySend(StreamEvent.Error(e.message ?: "Stream error"))
+                }
+            }
+        }
+
+        close()
+        awaitClose { call.cancel() }
+    }
+
+    private fun deriveStreamUrl(webhookUrl: String): String {
+        if (webhookUrl.trimEnd('/').endsWith("/stream")) return webhookUrl
+        return webhookUrl.trimEnd('/') + "/stream"
     }
 
     /**
@@ -146,26 +233,32 @@ class OpenClawClient {
     }
 
     /**
-     * Extract response text from various JSON formats
+     * Parse response JSON and extract text + optional audio URL
      */
-    private fun extractResponseText(json: String): String? {
+    private fun parseResponse(json: String): OpenClawResponse {
         return try {
             val obj = gson.fromJson(json, JsonObject::class.java)
-            
-            // OpenClaw /hooks/voice format: { ok, response, session_id }
-            obj.get("response")?.asString
-            // OpenAI format: choices[0].message.content
-            ?: obj.getAsJsonArray("choices")?.let { choices ->
-                choices.firstOrNull()?.asJsonObject
-                    ?.getAsJsonObject("message")
-                    ?.get("content")?.asString
-            }
-            // Other simple formats
-            ?: obj.get("text")?.asString
-            ?: obj.get("message")?.asString
-            ?: obj.get("content")?.asString
+
+            // Extract response text from various formats
+            val text = obj.get("response")?.asString
+                ?: obj.getAsJsonArray("choices")?.let { choices ->
+                    choices.firstOrNull()?.asJsonObject
+                        ?.getAsJsonObject("message")
+                        ?.get("content")?.asString
+                }
+                ?: obj.get("text")?.asString
+                ?: obj.get("message")?.asString
+                ?: obj.get("content")?.asString
+
+            // Extract audio URL if present
+            val audioUrl = obj.get("audio_url")?.asString
+
+            // Extract model if present
+            val model = obj.get("model")?.asString
+
+            OpenClawResponse(response = text ?: json, audioUrl = audioUrl, model = model)
         } catch (e: Exception) {
-            null
+            OpenClawResponse(response = json)
         }
     }
 }
@@ -175,7 +268,10 @@ class OpenClawClient {
  */
 data class OpenClawResponse(
     val response: String? = null,
-    val error: String? = null
+    val error: String? = null,
+    val audioUrl: String? = null,
+    val model: String? = null
 ) {
     fun getResponseText(): String? = response
+    fun hasServerAudio(): Boolean = !audioUrl.isNullOrBlank()
 }

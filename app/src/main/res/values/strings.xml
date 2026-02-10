@@ -122,6 +122,30 @@
     <string name="wake_word_computer">Computer</string>
     <string name="wake_word_custom">Custom…</string>
     
+    <!-- TTS Provider Settings -->
+    <string name="tts_provider_label">TTS Provider</string>
+    <string name="tts_provider_local">Local (Device)</string>
+    <string name="tts_provider_openai">OpenAI</string>
+    <string name="tts_provider_elevenlabs">ElevenLabs</string>
+    <string name="tts_provider_fish_audio">Fish Audio</string>
+    <string name="tts_reference_id_label">Voice Model ID</string>
+    <string name="tts_reference_id_hint">Leave blank for default voice</string>
+    <string name="tts_api_key_label">API Key</string>
+    <string name="tts_voice_label">Voice</string>
+    <string name="tts_model_label">Model</string>
+    <string name="tts_test_voice">Test Voice</string>
+    <string name="tts_testing">Testing…</string>
+    <string name="tts_test_success">Voice test successful</string>
+    <string name="tts_test_failed">Voice test failed: %s</string>
+    <string name="tts_test_sample">Hello, this is a voice test from OpenClaw Assistant.</string>
+    <string name="tts_api_key_required">API key required for cloud TTS</string>
+    <string name="show_api_key">Show API key</string>
+
+    <!-- Streaming -->
+    <string name="streaming_label">Response Streaming</string>
+    <string name="streaming_description">Stream responses in real-time (requires server support)</string>
+    <string name="error_stream_failed">Streaming failed, retrying without streaming</string>
+
     <!-- Chat UI -->
     <string name="conversations_title">Conversations</string>
     <string name="new_chat">New Chat</string>
